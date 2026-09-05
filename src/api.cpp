@@ -43,6 +43,8 @@ struct LRContext {
     LibRaw proc;
     int w = 0, h = 0;
     int cfa[4] = {0, 1, 1, 2};
+    char xtrans[6][6] = {{0}};   // only populated when isXTrans is true
+    bool isXTrans = false;
     int black = 0, white = 65535;
     std::vector<uint16_t> mosaic;   // cropped visible area
     float cam_mul[4] = {1, 1, 1, 1};
@@ -59,14 +61,14 @@ extern "C" LRContext* lr_open(const uint8_t* bytes, size_t len) {
         delete ctx;
         return nullptr;
     }
-    // Only classic 2x2 Bayer is supported here. X-Trans (filters==9) and
-    // full-colour / Foveon (filters==0) need different handling — the host app
-    // falls back to its preview path for these.
+    // Foveon (filters==0) has no CFA to demosaic at all — still out of scope.
+    // X-Trans (filters==9) now has real handling below instead of rejection.
     const unsigned filters = ctx->proc.imgdata.idata.filters;
-    if (filters == 0 || filters == 9) {
+    if (filters == 0) {
         delete ctx;
         return nullptr;
     }
+    ctx->isXTrans = (filters == 9);
     auto& S = ctx->proc.imgdata.sizes;
     auto& C = ctx->proc.imgdata.color;
 
@@ -75,11 +77,19 @@ extern "C" LRContext* lr_open(const uint8_t* bytes, size_t len) {
     const int RW = S.raw_width;
     ctx->w = W; ctx->h = H;
 
-    // CFA from visible top-left (COLOR uses absolute raw coordinates).
-    ctx->cfa[0] = normColour(ctx->proc.COLOR(T + 0, L + 0));
-    ctx->cfa[1] = normColour(ctx->proc.COLOR(T + 0, L + 1));
-    ctx->cfa[2] = normColour(ctx->proc.COLOR(T + 1, L + 0));
-    ctx->cfa[3] = normColour(ctx->proc.COLOR(T + 1, L + 1));
+    if (ctx->isXTrans) {
+        // imgdata.idata.xtrans is char[6][6] -- same type as ours, demosaic_xtrans_fast
+        // does its own widening to int internally, so this is a plain copy.
+        for (int r = 0; r < 6; ++r)
+            for (int col = 0; col < 6; ++col)
+                ctx->xtrans[r][col] = ctx->proc.imgdata.idata.xtrans[r][col];
+    } else {
+        // CFA from visible top-left (COLOR uses absolute raw coordinates).
+        ctx->cfa[0] = normColour(ctx->proc.COLOR(T + 0, L + 0));
+        ctx->cfa[1] = normColour(ctx->proc.COLOR(T + 0, L + 1));
+        ctx->cfa[2] = normColour(ctx->proc.COLOR(T + 1, L + 0));
+        ctx->cfa[3] = normColour(ctx->proc.COLOR(T + 1, L + 1));
+    }
 
     // Black level. LibRaw exposes a base black plus a cblack[] structure:
     //   cblack[0..3] : per-CFA-channel offsets, OR
@@ -177,6 +187,12 @@ static int libraw_native_demosaic(LRContext* c, int user_qual,
 
 extern "C" int lr_demosaic(LRContext* c, int qual, float* R, float* G, float* B) {
     if (!c || c->mosaic.empty()) return -1;
+    if (c->isXTrans) {
+        // Only the fast tier exists right now -- qual is ignored, since
+        // there's only one X-Trans option so far.
+        return demosaic_xtrans_fast(c->mosaic.data(), c->w, c->h, c->xtrans,
+                                     (float)c->black, (float)c->white, R, G, B);
+    }
     if (qual == QUAL_DCB || qual == QUAL_DHT)
         return libraw_native_demosaic(c, qual == QUAL_DCB ? 4 : 11, R, G, B);
     return dispatch_demosaic(c->mosaic.data(), c->w, c->h, c->cfa,
