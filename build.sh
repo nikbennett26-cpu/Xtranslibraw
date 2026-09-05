@@ -27,6 +27,7 @@ COMMON_FLAGS=(
   -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPU16,HEAP32,HEAPF32
   -sEXPORT_NAME=createLibRawGPL3
   -sSINGLE_FILE=1
+  -sUSE_ZLIB=1 -sUSE_LIBJPEG=1
 )
 # SINGLE_FILE=1 embeds the .wasm binary as base64 directly inside the output
 # .js, so dist/libraw-gpl3.js is fully self-contained -- no separate .wasm to
@@ -64,7 +65,7 @@ if [ "$MODE" = "full" ]; then
       ( cd vendor/LibRaw && autoreconf --install )
     fi
     mkdir -p build/libraw
-    ( cd build/libraw && emconfigure ../../vendor/LibRaw/configure --disable-shared --disable-examples --disable-openmp )
+    ( cd build/libraw && CFLAGS="-sUSE_ZLIB=1 -sUSE_LIBJPEG=1" CXXFLAGS="-sUSE_ZLIB=1 -sUSE_LIBJPEG=1" emconfigure ../../vendor/LibRaw/configure --disable-shared --disable-examples --disable-openmp )
     emmake make -C build/libraw -j4
   fi
   INCLUDES+=(-Ivendor/LibRaw)
