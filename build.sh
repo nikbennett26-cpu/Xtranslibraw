@@ -3,8 +3,10 @@
 # Build the WASM artifact. Two modes:
 #   MODE=core  -> demosaic-only module (no LibRaw). Proves the toolchain fast.
 #   MODE=full  -> LibRaw decode + demosaic (default when vendor/LibRaw present).
+
+
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")"
 ROOT="$PWD"
 
 # Activate emsdk if present.
@@ -39,8 +41,6 @@ EXPORTS='["_malloc","_free","_dm_demosaic_raw"]'
 SRCS=(src/api.cpp src/demosaic_bilinear.cpp src/demosaic_amaze.cpp src/demosaic_lmmse.cpp src/demosaic_rcd.cpp src/demosaic_igv.cpp src/demosaic_ahd.cpp src/demosaic_xtrans_fast.cpp)
 INCLUDES=(-Isrc)
 LIBS=()
-
-# AMaZE, LMMSE, RCD, IGV, AHD (RawTherapee, GPL-3) are enabled when the source
 # tree is vendored. They compile RT's SSE2 SIMD path, emulated to WASM SIMD via
 # -msse2 -msimd128.
 if [ -d vendor/RawTherapee/rtengine ] && [ -f src/amaze/amaze_port.cc ]; then
@@ -55,16 +55,17 @@ if [ "$MODE" = "full" ]; then
   COMMON_FLAGS+=(-DHAVE_LIBRAW)
 
   # Build LibRaw to a static library with the Emscripten toolchain (once).
-  if [ ! -f build/libraw/lib/libraw.a ] && [ -z "$(find build/libraw -name 'libraw*.a' 2>/dev/null | head -1)" ]; then
-    echo ">> configuring LibRaw (emcmake)"
-    emcmake cmake -S vendor/LibRaw -B build/libraw \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DBUILD_SHARED_LIBS=OFF \
-      -DENABLE_EXAMPLES=OFF -DENABLE_OPENMP=OFF \
-      -DENABLE_LCMS=OFF -DENABLE_JASPER=OFF \
-      -DENABLE_RAWSPEED=OFF -DENABLE_X3FTOOLS=OFF \
-      -DLIBRAW_INSTALL=OFF >/dev/null
-    cmake --build build/libraw --target raw -j 4
+  # LibRaw ships autotools (configure.ac/Makefile.am), not CMake -- there is
+  # no CMakeLists.txt in the real source tree, so emcmake/cmake could never
+  # have worked here.
+  if [ -z "$(find build/libraw -name 'libraw*.a' 2>/dev/null | head -1)" ]; then
+    echo ">> configuring LibRaw (autotools)"
+    if [ ! -f vendor/LibRaw/configure ]; then
+      ( cd vendor/LibRaw && autoreconf --install )
+    fi
+    mkdir -p build/libraw
+    ( cd build/libraw && emconfigure ../../vendor/LibRaw/configure --disable-shared --disable-examples --disable-openmp )
+    emmake make -C build/libraw -j4
   fi
   INCLUDES+=(-Ivendor/LibRaw)
   # locate the built archive
@@ -74,10 +75,11 @@ if [ "$MODE" = "full" ]; then
 fi
 
 echo ">> compiling module"
-emcc "${COMMON_FLAGS[@]}" "${INCLUDES[@]}" \
+em++ "${COMMON_FLAGS[@]}" "${INCLUDES[@]}" \
   -sEXPORTED_FUNCTIONS="$EXPORTS" \
   "${SRCS[@]}" ${LIBS[@]+"${LIBS[@]}"} \
   -o dist/libraw-gpl3.js
 
 echo ">> wrote dist/libraw-gpl3.js + dist/libraw-gpl3.wasm"
 ls -la dist
+
